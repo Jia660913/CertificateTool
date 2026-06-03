@@ -8,6 +8,10 @@ const PORT = Number(process.env.PORT || 4177);
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const JOBS_DIR = path.join(ROOT, ".jobs");
+const CSI_BUNDLE_ROOT =
+  process.env.CSI_BUNDLE_ROOT ||
+  "C:\\Users\\z0242332\\OneDrive - ZF Friedrichshafen AG\\Desktop\\CSI_Bundle";
+const CERTIFICATE_SAMPLE_DIR = path.join(CSI_BUNDLE_ROOT, "samples", "certificate-tool-cfg");
 const EXE_PATH =
   process.env.CSI_CERT_TOOL_EXE ||
   "C:\\Users\\z0242332\\OneDrive - ZF Friedrichshafen AG\\Desktop\\CSI_Bundle\\bin\\windows\\x64\\CsiCertificateTool.exe";
@@ -163,6 +167,47 @@ function serveStatic(req, res) {
   });
 }
 
+function serveSamples(req, res) {
+  if (req.method !== "GET") return false;
+  if (req.url === "/api/samples") {
+    if (!fs.existsSync(CERTIFICATE_SAMPLE_DIR)) {
+      send(res, 404, { error: "Certificate sample directory was not found.", path: CERTIFICATE_SAMPLE_DIR });
+      return true;
+    }
+    const files = fs
+      .readdirSync(CERTIFICATE_SAMPLE_DIR)
+      .filter((file) => file.toLowerCase().endsWith(".json"))
+      .sort()
+      .map((file) => ({
+        name: file,
+        mode: file.toLowerCase().includes("offline") ? "offline" : "dlm",
+        path: path.join(CERTIFICATE_SAMPLE_DIR, file)
+      }));
+    send(res, 200, { sampleDir: CERTIFICATE_SAMPLE_DIR, files });
+    return true;
+  }
+
+  const match = req.url.match(/^\/api\/samples\/([^/]+)$/);
+  if (!match) return false;
+  const fileName = sanitizeFileName(decodeURIComponent(match[1]), "sample.json");
+  if (!fileName.toLowerCase().endsWith(".json")) {
+    send(res, 400, { error: "Only JSON samples can be loaded." });
+    return true;
+  }
+  const target = path.join(CERTIFICATE_SAMPLE_DIR, fileName);
+  if (!target.startsWith(CERTIFICATE_SAMPLE_DIR) || !fs.existsSync(target)) {
+    send(res, 404, { error: "Sample was not found.", fileName });
+    return true;
+  }
+  try {
+    const config = JSON.parse(fs.readFileSync(target, "utf8"));
+    send(res, 200, { name: fileName, path: target, config });
+  } catch (error) {
+    send(res, 500, { error: error.message, fileName });
+  }
+  return true;
+}
+
 function serveJobFile(req, res) {
   const match = req.url.match(/^\/api\/jobs\/([^/]+)\/(output|config)$/);
   if (!match) return false;
@@ -249,6 +294,7 @@ async function handleRun(req, res) {
 
 const server = http.createServer((req, res) => {
   if (req.method === "POST" && req.url === "/api/run") return handleRun(req, res);
+  if (serveSamples(req, res)) return;
   if (req.method === "GET" && serveJobFile(req, res)) return;
   if (req.method === "GET") return serveStatic(req, res);
   send(res, 405, { error: "Method not allowed." });

@@ -110,6 +110,9 @@ const state = {
   },
   paths: {},
   uploadedFiles: {},
+  samples: [],
+  selectedSample: "",
+  sampleDir: "",
   errors: {},
   result: null,
   busy: false
@@ -471,6 +474,42 @@ function pageHead(title, copy, badge = "") {
 function renderStart() {
   return `
     ${pageHead("选择证书生成方式", "普通用户使用内置证书模板即可。系统会根据表单生成 JSON，再调用 CsiCertificateTool.exe。", "推荐：模板生成")}
+    <div class="section">
+      <div class="section-title"><h2>桌面 CSI_Bundle 样例演示</h2><span class="badge ok">推荐先试</span></div>
+      <p class="section-note">这里直接读取桌面 <code>CSI_Bundle\\samples\\certificate-tool-cfg</code> 里的真实样例。选择一个样例后，系统会自动反填表单，你可以逐页查看逻辑是否正确。</p>
+      <div class="grid">
+        ${fieldCard({
+          label: "选择桌面样例",
+          badge: "演示",
+          badgeType: "ok",
+          help: "选择真实 certificate-tool 配置样例。offline 样例可以直接运行；DLM 样例会反填 Product/Build/Group，但实际运行还需要你的 DLM 凭证和网络条件。",
+          format: "来自本地 CSI_Bundle",
+          example: "offline-ecdsa-zf1-secp256r1.json",
+          control: `
+            <div class="control-row">
+              <select class="select" data-bind="selectedSample">
+                <option value="">请选择样例</option>
+                ${optionList(state.samples.map((item) => ({ value: item.name, label: `${item.mode.toUpperCase()} - ${item.name}` })), state.selectedSample)}
+              </select>
+              <button class="btn primary" data-action="load-sample" ${state.selectedSample ? "" : "disabled"}>加载样例</button>
+            </div>
+          `,
+          error: state.errors.sample
+        })}
+        ${fieldCard({
+          label: "样例目录",
+          badge: "只读",
+          badgeType: "optional",
+          help: "后端只读取这个目录中的 certificate-tool JSON 样例，不会修改 CSI_Bundle。",
+          format: "本地路径",
+          example: "samples\\certificate-tool-cfg",
+          control: `<input class="input" disabled value="${escapeHtml(state.sampleDir || "正在读取样例目录...")}" />`
+        })}
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title"><h2>手动开始</h2><span class="badge optional">可选</span></div>
+    </div>
     <div class="choice-grid">
       ${choiceCard("basic", "内置证书模板", "按样例证书结构生成证书。用户只填写业务字段和签名参数，最适合第一版上线。")}
       ${choiceCard("import", "导入已有 JSON", "上传已有配置并反填到表单。适合支持人员或已经有配置文件的用户。")}
@@ -1270,10 +1309,7 @@ function bindEvents() {
       if (!file) return;
       const text = await file.text();
       try {
-        importConfig(JSON.parse(text));
-        state.templateMode = "advanced";
-        state.step = 1;
-        state.errors = {};
+        applyLoadedConfig(JSON.parse(text));
       } catch (error) {
         state.errors.importJson = error.message;
       }
@@ -1318,6 +1354,10 @@ function handleAction(action, dataset) {
       state.signature.field = "signature";
     }
     render();
+    return;
+  }
+  if (action === "load-sample") {
+    loadSelectedSample();
     return;
   }
   if (action === "set-run-mode") {
@@ -1413,6 +1453,9 @@ function resetState() {
     dlm: { type: "dsa", credentialType: "dsa", productId: "", buildId: "", groupId: "", ecuId: "", projectId: "", componentId: "", bpParams: "", directUri: "default", directCustomUri: "", jwt: "", mtlsUri: "default", mtlsCustomUri: "", ddaUri: "default", ddaCustomUri: "", autoAuthUri: "default", autoAuthCustomUri: "", proximaUri: "default", proximaCustomUri: "", httpProxy: "", async: false },
     paths: {},
     uploadedFiles: {},
+    samples: state.samples || [],
+    selectedSample: state.selectedSample || "",
+    sampleDir: state.sampleDir || "",
     errors: {},
     result: null,
     busy: false
@@ -1507,6 +1550,54 @@ function importConfig(config) {
   }
 }
 
+function structureLooksLikeBasicTemplate() {
+  const names = variableNodes().map((node) => node.variableName);
+  return ["version", "certificateSerialNumber", "subjectId", "publicKeyModulo", "publicKeyExponent", "signature"]
+    .every((name) => names.includes(name));
+}
+
+function applyLoadedConfig(config) {
+  importConfig(config);
+  state.templateMode = structureLooksLikeBasicTemplate() ? "basic" : "advanced";
+  if (!state.run.outputFileName || state.run.outputFileName === "output.cert") {
+    const subject = state.data.subjectId || "subject";
+    const serial = state.data.certificateSerialNumber || "certificate";
+    state.run.outputFileName = `cert-${subject}-${serial}.cert`;
+  }
+  state.step = 1;
+  state.errors = {};
+}
+
+async function loadSamples() {
+  try {
+    const response = await fetch("/api/samples");
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "样例列表读取失败。");
+    state.samples = payload.files || [];
+    state.sampleDir = payload.sampleDir || "";
+    if (!state.selectedSample && state.samples.length) {
+      const preferred = state.samples.find((sample) => sample.name === "offline-ecdsa-zf1-secp256r1.json");
+      state.selectedSample = (preferred || state.samples[0]).name;
+    }
+  } catch (error) {
+    state.errors.sample = error.message;
+  }
+  render();
+}
+
+async function loadSelectedSample() {
+  if (!state.selectedSample) return;
+  try {
+    const response = await fetch(`/api/samples/${encodeURIComponent(state.selectedSample)}`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "样例加载失败。");
+    applyLoadedConfig(payload.config);
+  } catch (error) {
+    state.errors.sample = error.message;
+  }
+  render();
+}
+
 function payloadForRun() {
   const dlmConnection = {
     ...state.dlm,
@@ -1560,3 +1651,4 @@ async function runTool() {
 }
 
 render();
+loadSamples();
