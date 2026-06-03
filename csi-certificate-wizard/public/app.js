@@ -1189,9 +1189,18 @@ function renderResult() {
     <div class="summary-card">
       <div class="result-title"><span class="result-dot ${ok ? "ok" : "fail"}"></span>${escapeHtml(message.title)}</div>
       <p class="page-copy">${escapeHtml(message.copy)}</p>
+      ${result.downloadsDir ? `
+        <div class="notice ok">
+          已自动保存到本机 Downloads 目录：<br />
+          <strong>${escapeHtml(result.downloadsDir)}</strong>
+          ${result.savedOutputPath ? `<br />证书：<strong>${escapeHtml(result.savedOutputPath)}</strong>` : ""}
+          ${result.savedConfigPath ? `<br />JSON：<strong>${escapeHtml(result.savedConfigPath)}</strong>` : ""}
+        </div>
+      ` : ""}
       <div class="button-group">
-        ${result.outputUrl ? `<a class="btn primary" href="${escapeHtml(result.outputUrl)}">下载证书</a>` : ""}
-        ${result.configUrl ? `<a class="btn" href="${escapeHtml(result.configUrl)}">下载生成的 JSON</a>` : ""}
+        ${result.outputUrl ? `<a class="btn primary" href="${escapeHtml(result.outputUrl)}" download>浏览器下载证书</a>` : ""}
+        ${result.configUrl ? `<a class="btn" href="${escapeHtml(result.configUrl)}" download>浏览器下载生成的 JSON</a>` : ""}
+        ${result.downloadsDir ? `<button class="btn" data-action="open-downloads">打开本机 Downloads 文件夹</button>` : ""}
       </div>
     </div>
     <div class="section">
@@ -1433,6 +1442,9 @@ function handleAction(action, dataset) {
   if (action === "run") {
     runTool();
   }
+  if (action === "open-downloads") {
+    openDownloadsFolder();
+  }
 }
 
 function resetState() {
@@ -1646,6 +1658,18 @@ async function runTool() {
     state.step = 7;
   } finally {
     state.busy = false;
+    render();
+  }
+}
+
+async function openDownloadsFolder() {
+  try {
+    await fetch("/api/open-downloads", { method: "POST" });
+  } catch (error) {
+    state.result = {
+      ...(state.result || {}),
+      stderr: `${state.result?.stderr || ""}\nOpen Downloads failed: ${error.message}`
+    };
     render();
   }
 }

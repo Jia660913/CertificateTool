@@ -1,6 +1,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const { spawn } = require("child_process");
 const crypto = require("crypto");
 
@@ -12,6 +13,9 @@ const CSI_BUNDLE_ROOT =
   process.env.CSI_BUNDLE_ROOT ||
   "C:\\Users\\z0242332\\OneDrive - ZF Friedrichshafen AG\\Desktop\\CSI_Bundle";
 const CERTIFICATE_SAMPLE_DIR = path.join(CSI_BUNDLE_ROOT, "samples", "certificate-tool-cfg");
+const DOWNLOADS_DIR =
+  process.env.CSI_DOWNLOAD_DIR ||
+  path.join(os.homedir(), "Downloads", "CertificateTool");
 const EXE_PATH =
   process.env.CSI_CERT_TOOL_EXE ||
   "C:\\Users\\z0242332\\OneDrive - ZF Friedrichshafen AG\\Desktop\\CSI_Bundle\\bin\\windows\\x64\\CsiCertificateTool.exe";
@@ -26,6 +30,7 @@ const MIME_TYPES = {
 };
 
 fs.mkdirSync(JOBS_DIR, { recursive: true });
+fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
 
 function send(res, status, body, contentType = "application/json; charset=utf-8") {
   const payload = typeof body === "string" ? body : JSON.stringify(body, null, 2);
@@ -238,6 +243,26 @@ function serveJobFile(req, res) {
   return true;
 }
 
+function uniqueDownloadPath(fileName) {
+  const safeName = sanitizeFileName(fileName, "download.bin");
+  const parsed = path.parse(safeName);
+  let candidate = path.join(DOWNLOADS_DIR, safeName);
+  let index = 1;
+  while (fs.existsSync(candidate)) {
+    candidate = path.join(DOWNLOADS_DIR, `${parsed.name}-${index}${parsed.ext}`);
+    index += 1;
+  }
+  return candidate;
+}
+
+function serveOpenDownloads(req, res) {
+  if (req.method !== "POST" || req.url !== "/api/open-downloads") return false;
+  fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+  spawn("explorer.exe", [DOWNLOADS_DIR], { detached: true, stdio: "ignore", windowsHide: false }).unref();
+  send(res, 200, { downloadsDir: DOWNLOADS_DIR });
+  return true;
+}
+
 async function handleRun(req, res) {
   try {
     const payload = await readJson(req);
@@ -249,6 +274,8 @@ async function handleRun(req, res) {
     const outputName = sanitizeFileName(payload.outputFileName || "output.cert", "output.cert");
     const outputPath = path.join(jobDir, outputName.endsWith(".cert") ? outputName : `${outputName}.cert`);
     const canonicalOutput = path.join(jobDir, "output.cert");
+    const downloadOutputName = path.basename(outputPath);
+    const downloadConfigName = `${path.parse(downloadOutputName).name}.generated-config.json`;
 
     fs.writeFileSync(path.join(jobDir, "meta.json"), JSON.stringify({ outputFileName: path.basename(outputPath) }, null, 2), "utf8");
     fs.writeFileSync(configPath, JSON.stringify(payload.config, null, 2), "utf8");
@@ -274,8 +301,21 @@ async function handleRun(req, res) {
     child.stderr.on("data", (data) => (stderr += data.toString()));
     child.on("close", (code) => {
       clearTimeout(timer);
+      let savedOutputPath = null;
+      let savedConfigPath = null;
       if (fs.existsSync(outputPath) && outputPath !== canonicalOutput) {
         fs.copyFileSync(outputPath, canonicalOutput);
+      }
+      try {
+        fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+        savedConfigPath = uniqueDownloadPath(downloadConfigName);
+        fs.copyFileSync(configPath, savedConfigPath);
+        if (fs.existsSync(canonicalOutput)) {
+          savedOutputPath = uniqueDownloadPath(downloadOutputName);
+          fs.copyFileSync(canonicalOutput, savedOutputPath);
+        }
+      } catch (error) {
+        stderr += `\nDownload save failed: ${error.message}`;
       }
       send(res, 200, {
         jobId,
@@ -283,6 +323,9 @@ async function handleRun(req, res) {
         command: redactedCommand,
         stdout,
         stderr,
+        downloadsDir: DOWNLOADS_DIR,
+        savedOutputPath,
+        savedConfigPath,
         outputUrl: fs.existsSync(canonicalOutput) ? `/api/jobs/${jobId}/output` : null,
         configUrl: `/api/jobs/${jobId}/config`
       });
@@ -294,6 +337,7 @@ async function handleRun(req, res) {
 
 const server = http.createServer((req, res) => {
   if (req.method === "POST" && req.url === "/api/run") return handleRun(req, res);
+  if (serveOpenDownloads(req, res)) return;
   if (serveSamples(req, res)) return;
   if (req.method === "GET" && serveJobFile(req, res)) return;
   if (req.method === "GET") return serveStatic(req, res);
